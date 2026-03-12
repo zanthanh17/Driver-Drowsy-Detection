@@ -251,6 +251,33 @@ cap.release()
 
 ---
 
+## 🍓 Raspberry Pi 4 (Bookworm 64-bit) — Chạy Live Camera Nhanh
+
+Repo đã có script cài nhanh + chạy nhanh cho Pi4:
+
+```bash
+# 1) Setup 1 lần
+bash scripts/pi4_setup.sh
+
+# 2) Chạy live camera
+bash scripts/pi4_run_live.sh
+```
+
+Mặc định script sẽ:
+- Tạo virtualenv tại `.venv-pi`
+- Ưu tiên backend `V4L2`
+- Tự chọn `/dev/video0` (hoặc node camera đầu tiên)
+- Chạy ở `640x480 @ 20 FPS` để ổn định realtime trên Pi4
+
+Tuỳ chỉnh nhanh:
+
+```bash
+CAMERA_PATH=/dev/video0 WIDTH=960 HEIGHT=540 FPS=25 bash scripts/pi4_run_live.sh
+SAVE_VIDEO=results/pi4_live.mp4 bash scripts/pi4_run_live.sh
+```
+
+---
+
 ## ⚠️ Lưu Ý Quan Trọng
 
 ### MediaPipe Version

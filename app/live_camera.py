@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Live camera app for DrowsinessDetectorV2 (USB webcam ready)."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import sys
+import time
+from pathlib import Path
+from typing import Optional, Tuple, Union
+
+import cv2
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run drowsiness detection from live USB camera."
+    )
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=0,
+        help="Camera index fallback (default: 0).",
+    )
+    parser.add_argument(
+        "--camera-path",
+        default="",
+        help="Open camera by device path (Linux), e.g. /dev/video0.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "v4l2", "default"],
+        default="auto",
+        help="VideoCapture backend selection.",
+    )
+    parser.add_argument(
+        "--fallback-scan-max",
+        type=int,
+        default=4,
+        help="If selected index fails, scan camera indices from 0..N.",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=1280,
+        help="Requested camera width.",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=720,
+        help="Requested camera height.",
+    )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=30,
+        help="Requested camera FPS.",
+    )
+    parser.add_argument(
+        "--no-mirror",
+        action="store_true",
+        help="Disable horizontal mirror view.",
+    )
+    parser.add_argument(
+        "--eye-model",
+        default="models/eye_cnn/eye_model.tflite",
+        help="Path to eye TFLite model.",
+    )
+    parser.add_argument(
+        "--yawn-model",
+        default="models/yawn_cnn/yawn_model.tflite",
+        help="Path to yawn TFLite model.",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to config.yaml.",
+    )
+    parser.add_argument(
+        "--save-video",
+        default="",
+        help="Optional output video path (e.g. results/live_demo.mp4).",
+    )
+    return parser.parse_args()
+
+
+def _try_open(
+    source: Union[int, str],
+    backend: Optional[int],
+    width: int,
+    height: int,
+    fps: int,
+):
+    cap = cv2.VideoCapture(source, backend) if backend is not None else cv2.VideoCapture(source)
+    if not cap.isOpened():
+        cap.release()
+        return None
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    for _ in range(10):
+        ok, frame = cap.read()
+        if ok and frame is not None and frame.size > 0:
+            return cap
+        time.sleep(0.02)
+
+    cap.release()
+    return None
+
+
+def _video_backends(backend_mode: str):
+    if backend_mode == "default":
+        return [(None, "DEFAULT")]
+    if backend_mode == "v4l2":
+        if platform.system().lower() != "linux" or not hasattr(cv2, "CAP_V4L2"):
+            return [(None, "DEFAULT")]
+        return [(cv2.CAP_V4L2, "V4L2")]
+    if platform.system().lower() == "linux" and hasattr(cv2, "CAP_V4L2"):
+        return [(cv2.CAP_V4L2, "V4L2")]
+    return [(None, "DEFAULT")]
+
+
+def list_linux_video_nodes():
+    if platform.system().lower() != "linux":
+        return []
+    return sorted(Path("/dev").glob("video*"), key=lambda p: p.name)
+
+
+def looks_like_wsl() -> bool:
+    if platform.system().lower() != "linux":
+        return False
+    release = platform.release().lower()
+    return "microsoft" in release or "wsl" in release
+
+
+def open_camera(
+    camera_index: int,
+    scan_max: int,
+    width: int,
+    height: int,
+    fps: int,
+    camera_path: str,
+    backend_mode: str,
+):
+    backend_candidates = _video_backends(backend_mode)
+
+    if camera_path:
+        for backend, backend_name in backend_candidates:
+            cap = _try_open(camera_path, backend, width, height, fps)
+            if cap is not None:
+                return cap, camera_path, backend_name
+        return None, camera_path, "N/A"
+
+    attempts = [camera_index]
+    attempts.extend(i for i in range(scan_max + 1) if i != camera_index)
+
+    for idx in attempts:
+        for backend, backend_name in backend_candidates:
+            cap = _try_open(idx, backend, width, height, fps)
+            if cap is not None:
+                return cap, idx, backend_name
+
+    return None, camera_index, "N/A"
+
+
+def status_color(status: str) -> Tuple[int, int, int]:
+    if status == "drowsy":
+        return (0, 0, 255)  # red
+    if status == "warning":
+        return (0, 165, 255)  # orange
+    return (0, 200, 0)  # green
+
+
+def draw_overlay(frame, result, fps, cam_idx, backend_name):
+    color = status_color(result["status"])
+    h, w = frame.shape[:2]
+
+    cv2.putText(
+        frame,
+        f"CAM {cam_idx} ({backend_name})  FPS: {fps:.1f}",
+        (16, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"STATUS: {result['status'].upper()}",
+        (16, 62),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"Fusion: {result['fusion_score']:.3f}  EAR: {result['ear']:.3f}  MAR: {result['mar']:.3f}",
+        (16, 92),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (220, 220, 220),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"EyeCNN(closed): {result['eye_cnn_score']:.3f}  YawnCNN: {result['yawn_cnn_score']:.3f}",
+        (16, 122),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (220, 220, 220),
+        2,
+        cv2.LINE_AA,
+    )
+
+    pose = result.get("head_pose")
+    if pose:
+        cv2.putText(
+            frame,
+            (
+                f"Head Pose  pitch:{pose['pitch']:.1f}  "
+                f"yaw:{pose['yaw']:.1f}  roll:{pose['roll']:.1f}"
+            ),
+            (16, 152),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (220, 220, 220),
+            2,
+            cv2.LINE_AA,
+        )
+    else:
+        cv2.putText(
+            frame,
+            "Head Pose: N/A (face not found)",
+            (16, 152),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (140, 140, 140),
+            2,
+            cv2.LINE_AA,
+        )
+
+    cv2.putText(
+        frame,
+        "q: quit | r: reset detector state",
+        (16, h - 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (190, 190, 190),
+        2,
+        cv2.LINE_AA,
+    )
+
+    if result["alert"]:
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (w, 170), (0, 0, 255), -1)
+        cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+        cv2.putText(
+            frame,
+            "DROWSINESS ALERT! PLEASE REST!",
+            (16, 158),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.95,
+            (255, 255, 255),
+            3,
+            cv2.LINE_AA,
+        )
+
+
+def main() -> int:
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    args = parse_args()
+
+    try:
+        from pipeline.drowsiness_detector import DrowsinessDetectorV2
+    except ModuleNotFoundError as exc:
+        print(f"Missing dependency: {exc.name}")
+        print("Install dependencies first: pip install -r requirements.txt")
+        return 1
+
+    detector = DrowsinessDetectorV2(
+        eye_model_path=args.eye_model,
+        yawn_model_path=args.yawn_model,
+        config_path=args.config,
+    )
+
+    camera_path = args.camera_path
+
+    if platform.system().lower() == "linux" and not camera_path:
+        nodes = list_linux_video_nodes()
+        if nodes:
+            print("Detected camera nodes:", ", ".join(str(n) for n in nodes))
+            camera_path = str(nodes[0])
+            print(f"Using camera path: {camera_path}")
+        else:
+            print("No /dev/video* device found.")
+            if looks_like_wsl():
+                print(
+                    "WSL2 detected. Attach USB webcam to WSL first (usbipd), then run again."
+                )
+                print("PowerShell (Admin): usbipd list")
+                print("PowerShell (Admin): usbipd bind --busid <BUSID>")
+                print("PowerShell (Admin): usbipd attach --wsl --busid <BUSID>")
+                print("WSL: sudo modprobe uvcvideo")
+                print("WSL: ls /dev/video*")
+            else:
+                print("Check webcam connection and permissions, then retry.")
+
+    cap, actual_index, backend_name = open_camera(
+        camera_index=args.camera_index,
+        scan_max=args.fallback_scan_max,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        camera_path=camera_path,
+        backend_mode=args.backend,
+    )
+    if cap is None:
+        if camera_path:
+            print(f"Cannot open camera path: {camera_path}")
+            print("Check path exists and your user has read/write access.")
+        else:
+            print("Cannot open camera.")
+            print("Try --camera-index 0, or set --camera-path /dev/video0 (Linux).")
+            print("You can also increase scan range: --fallback-scan-max 10")
+        return 1
+
+    writer = None
+    if args.save_video:
+        out_path = Path(args.save_video)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(
+            str(out_path),
+            fourcc,
+            float(args.fps),
+            (args.width, args.height),
+        )
+        if not writer.isOpened():
+            print(f"Warning: cannot open output writer: {out_path}")
+            writer = None
+
+    print(
+        f"Live started on camera index {actual_index} ({backend_name}). "
+        "Press 'q' to quit, 'r' to reset."
+    )
+
+    fps_smooth = 0.0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                print("Camera frame read failed.")
+                break
+
+            if not args.no_mirror:
+                frame = cv2.flip(frame, 1)
+
+            t0 = time.perf_counter()
+            result = detector.process_frame(frame)
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            instant_fps = 1000.0 / latency_ms if latency_ms > 0 else 0.0
+            fps_smooth = instant_fps if fps_smooth == 0 else (0.9 * fps_smooth + 0.1 * instant_fps)
+
+            draw_overlay(frame, result, fps_smooth, actual_index, backend_name)
+
+            if writer is not None:
+                if (frame.shape[1], frame.shape[0]) != (args.width, args.height):
+                    frame_to_write = cv2.resize(frame, (args.width, args.height))
+                else:
+                    frame_to_write = frame
+                writer.write(frame_to_write)
+
+            cv2.imshow("Drowsiness Detection Live", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord("r"):
+                detector.reset()
+                print("Detector state reset.")
+
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+        cv2.destroyAllWindows()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

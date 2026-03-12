@@ -276,6 +276,12 @@ CAMERA_PATH=/dev/video0 WIDTH=960 HEIGHT=540 FPS=25 bash scripts/pi4_run_live.sh
 SAVE_VIDEO=results/pi4_live.mp4 bash scripts/pi4_run_live.sh
 ```
 
+Nếu gặp lỗi kiểu `_ARRAY_API not found` hoặc `numpy.core.multiarray failed to import`, chạy lại setup để hạ NumPy về bản tương thích:
+
+```bash
+bash scripts/pi4_setup.sh
+```
+
 ---
 
 ## ⚠️ Lưu Ý Quan Trọng

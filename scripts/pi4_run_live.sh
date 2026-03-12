@@ -13,6 +13,29 @@ fi
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
 
+if ! python3 - <<'PY'
+import numpy as np
+
+major = int(np.__version__.split(".")[0])
+if major >= 2:
+    raise SystemExit(
+        f"Incompatible NumPy version: {np.__version__}. "
+        "Expected NumPy 1.x for tflite-runtime on Pi."
+    )
+
+try:
+    import tflite_runtime.interpreter as _tflite  # noqa: F401
+except Exception as exc:
+    raise SystemExit(f"tflite-runtime import failed: {exc}") from exc
+PY
+then
+  echo "Runtime preflight failed. Fix with:"
+  echo "  bash \"$ROOT_DIR/scripts/pi4_setup.sh\""
+  echo "or manual fix:"
+  echo "  pip install --force-reinstall --no-cache-dir numpy==1.26.4 tflite-runtime"
+  exit 1
+fi
+
 WIDTH="${WIDTH:-640}"
 HEIGHT="${HEIGHT:-480}"
 FPS="${FPS:-20}"

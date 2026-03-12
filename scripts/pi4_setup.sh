@@ -56,6 +56,11 @@ echo "==> Installing Python runtime dependencies"
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r "$ROOT_DIR/requirements.pi4.txt"
 
+echo "==> Enforcing NumPy/TFLite ABI compatibility"
+python -m pip install --upgrade --force-reinstall --no-cache-dir \
+  "numpy==1.26.4" \
+  "tflite-runtime>=2.14"
+
 echo "==> Installing MediaPipe"
 if python -c "import mediapipe" >/dev/null 2>&1; then
   echo "MediaPipe already available in venv."
@@ -89,6 +94,10 @@ print("MediaPipe:", mp.__version__)
 print("PyYAML:", yaml.__version__)
 print("NumPy:", np.__version__)
 print("TFLite backend:", backend)
+
+major = int(np.__version__.split(".")[0])
+if major >= 2:
+    raise SystemExit("ERROR: NumPy 2.x detected. Re-run scripts/pi4_setup.sh")
 PY
 
 echo "==> Setup completed"

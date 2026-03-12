@@ -98,7 +98,16 @@ class DrowsinessDetectorV2:
 
         try:
             import tflite_runtime.interpreter as tflite
-            interp = tflite.Interpreter(model_path=model_path)
+            try:
+                interp = tflite.Interpreter(model_path=model_path)
+            except Exception as exc:
+                msg = str(exc)
+                if "_ARRAY_API" in msg or "multiarray failed to import" in msg:
+                    raise RuntimeError(
+                        "tflite-runtime is incompatible with current NumPy. "
+                        "Use NumPy 1.x (e.g. 1.26.4) and reinstall tflite-runtime."
+                    ) from exc
+                raise
         except ImportError:
             import tensorflow as tf
             interp = tf.lite.Interpreter(model_path=model_path)

@@ -182,9 +182,39 @@ def status_color(status: str) -> Tuple[int, int, int]:
     return (0, 200, 0)  # green
 
 
+def _draw_bbox(frame, bbox, color, label):
+    if not bbox:
+        return
+    x1, y1, x2, y2 = bbox
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+    text_y = max(20, y1 - 8)
+    cv2.putText(
+        frame,
+        label,
+        (x1, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+
+
+def draw_detection_boxes(frame, result):
+    face_color = (255, 220, 0)   # cyan-like
+    eye_color = (80, 255, 80)    # green
+    mouth_color = (255, 120, 0)  # orange
+
+    _draw_bbox(frame, result.get("face_bbox"), face_color, "FACE")
+    _draw_bbox(frame, result.get("eye_bbox"), eye_color, "EYES")
+    _draw_bbox(frame, result.get("mouth_bbox"), mouth_color, "MOUTH")
+
+
 def draw_overlay(frame, result, fps, cam_idx, backend_name):
     color = status_color(result["status"])
     h, w = frame.shape[:2]
+
+    draw_detection_boxes(frame, result)
 
     cv2.putText(
         frame,

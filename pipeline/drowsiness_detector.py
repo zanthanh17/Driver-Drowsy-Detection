@@ -57,6 +57,7 @@ class DrowsinessDetectorV2:
 
         # Region size
         self.img_size = self.cfg["data"]["img_size_region"]
+        self.eye_all_idx = sorted(set(LEFT_EYE_IDX + RIGHT_EYE_IDX))
 
         # Load TFLite models
         self.eye_interp  = self._load_tflite(eye_model_path)
@@ -89,6 +90,29 @@ class DrowsinessDetectorV2:
         self.smoother_window = 30
         self.fusion_history = collections.deque(maxlen=self.smoother_window)
         self.drowsy_counter = 0
+
+    def _landmark_bbox(self, landmarks, indices, h, w, padding=0.0):
+        """
+        Build (x1, y1, x2, y2) bbox in pixel coords from landmark indices.
+        Returns None if bbox is invalid.
+        """
+        xs = [landmarks[i].x * w for i in indices]
+        ys = [landmarks[i].y * h for i in indices]
+
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+
+        pad_w = (xmax - xmin) * padding
+        pad_h = (ymax - ymin) * padding
+
+        x1 = max(0, int(xmin - pad_w))
+        y1 = max(0, int(ymin - pad_h))
+        x2 = min(w - 1, int(xmax + pad_w))
+        y2 = min(h - 1, int(ymax + pad_h))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1, y1, x2, y2)
 
     def _load_tflite(self, model_path):
         """Load TFLite interpreter."""
@@ -165,6 +189,9 @@ class DrowsinessDetectorV2:
             - head_pose: dict or None
             - eye_cnn_score: float
             - yawn_cnn_score: float
+            - face_bbox: (x1, y1, x2, y2) | None
+            - eye_bbox: (x1, y1, x2, y2) | None
+            - mouth_bbox: (x1, y1, x2, y2) | None
         """
         h, w = frame.shape[:2]
         result = {
@@ -176,6 +203,9 @@ class DrowsinessDetectorV2:
             "head_pose": None,
             "eye_cnn_score": 0.0,
             "yawn_cnn_score": 0.0,
+            "face_bbox": None,
+            "eye_bbox": None,
+            "mouth_bbox": None,
         }
 
         # Run FaceMesh
@@ -185,6 +215,15 @@ class DrowsinessDetectorV2:
             return result
 
         lms = mesh_result.multi_face_landmarks[0].landmark
+        result["face_bbox"] = self._landmark_bbox(
+            lms, range(len(lms)), h, w, padding=0.08
+        )
+        result["eye_bbox"] = self._landmark_bbox(
+            lms, self.eye_all_idx, h, w, padding=0.5
+        )
+        result["mouth_bbox"] = self._landmark_bbox(
+            lms, MOUTH_IDX, h, w, padding=0.4
+        )
 
         # ── 1. EAR ──
         ear = calc_ear(lms, h, w)
@@ -200,8 +239,7 @@ class DrowsinessDetectorV2:
 
         # ── 2. Eye CNN ──
         # Output: 0=closed, 1=open. Invert for drowsiness score.
-        eye_all_idx = list(set(LEFT_EYE_IDX + RIGHT_EYE_IDX))
-        eye_crop = crop_region(frame, lms, eye_all_idx, self.img_size, padding=0.5)
+        eye_crop = crop_region(frame, lms, self.eye_all_idx, self.img_size, padding=0.5)
         eye_cnn_raw = 0.5
         if eye_crop is not None:
             eye_cnn_raw = self._infer_tflite(self.eye_interp, eye_crop)
